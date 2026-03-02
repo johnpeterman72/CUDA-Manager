@@ -4,7 +4,7 @@ A web-based PyTorch and CUDA version manager for SwarmUI's embedded ComfyUI Pyth
 
 ## What It Does
 
-Provides a local web UI (http://localhost:9090) to install, upgrade, switch, or uninstall PyTorch and CUDA packages inside SwarmUI's bundled Python (`dlbackend/comfy/python_embeded/`). No command-line knowledge required.
+Have you ever run a ComfyUI update and it broke your install because it resets your CUDA version?  This should help you fix that. Provides a local web UI (http://localhost:9090) to install, upgrade, switch, or uninstall PyTorch and CUDA packages inside SwarmUI's bundled Python (`dlbackend/comfy/python_embeded/`)—no command-line knowledge required.
 
 ![](./res/001.png)
 
