@@ -10,6 +10,8 @@ Have you ever run a ComfyUI update and it broke your install because it resets y
 
 ![](./res/002.png)
 
+![](./res/003.png)
+
 **Managed packages:**
 - PyTorch
 - TorchVision
