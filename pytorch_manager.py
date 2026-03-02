@@ -12,6 +12,7 @@ import threading
 import os
 from urllib.parse import urlparse, parse_qs
 from collections import deque
+import re
 
 PORT = 9090
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -31,6 +32,15 @@ CUDA_PACKAGES = [
     {"id": "torchaudio",  "name": "TorchAudio",    "pip": "torchaudio",  "required": True},
     {"id": "torchsde",    "name": "TorchSDE",      "pip": "torchsde",    "required": True},
     {"id": "xformers",    "name": "xFormers",       "pip": "xformers",    "required": False},
+]
+
+# CUDA Toolkit versions available via winget (Nvidia.CUDA)
+CUDA_TOOLKIT_VERSIONS = [
+    {"label": "Latest (winget default)", "version": None,     "cu_tag": None},
+    {"label": "CUDA 12.8  →  cu128",     "version": "12.8.0", "cu_tag": "cu128"},
+    {"label": "CUDA 12.6  →  cu126",     "version": "12.6.3", "cu_tag": "cu126"},
+    {"label": "CUDA 12.4  →  cu124",     "version": "12.4.1", "cu_tag": "cu124"},
+    {"label": "CUDA 11.8  →  cu118",     "version": "11.8.0", "cu_tag": "cu118"},
 ]
 
 
@@ -130,6 +140,30 @@ def get_gpu_info():
     return {"available": False, "devices": [], "driver": ""}
 
 
+def get_cuda_toolkit_info():
+    """Detect NVIDIA CUDA Toolkit installation via nvcc / CUDA_PATH."""
+    info = {"installed": False, "version": None, "nvcc_path": None, "cuda_path": None}
+    cuda_path = os.environ.get("CUDA_PATH") or os.environ.get("CUDA_HOME")
+    if cuda_path:
+        info["cuda_path"] = cuda_path
+        nvcc = os.path.join(cuda_path, "bin", "nvcc.exe")
+        if os.path.isfile(nvcc):
+            info["nvcc_path"] = nvcc
+    nvcc_cmd = info["nvcc_path"] or "nvcc"
+    try:
+        result = subprocess.run(
+            [nvcc_cmd, "--version"], capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            m = re.search(r"release (\d+\.\d+)", result.stdout)
+            if m:
+                info["installed"] = True
+                info["version"] = m.group(1)
+    except Exception:
+        pass
+    return info
+
+
 def build_pip_command(channel, cuda, packages, versions=None, force=False):
     """Build the pip install command for selected packages."""
     versions = versions or {}
@@ -212,6 +246,45 @@ def run_uninstall(packages):
             install_log.append("\n--- Uninstall completed successfully! ---\n")
         else:
             install_log.append(f"\n--- Uninstall failed (exit code {process.returncode}) ---\n")
+    except Exception as e:
+        install_log.append(f"\n--- Error: {e} ---\n")
+    finally:
+        install_running = False
+        install_done.set()
+
+
+def run_cuda_toolkit_install(version):
+    """Install NVIDIA CUDA Toolkit via winget in a background thread."""
+    global install_running
+    install_log.clear()
+    install_done.clear()
+    cmd = ["winget", "install", "Nvidia.CUDA",
+           "--accept-package-agreements", "--accept-source-agreements", "--silent"]
+    if version:
+        cmd.extend(["--version", version])
+    display = " ".join(cmd)
+    install_log.append(f"$ {display}\n")
+    install_log.append("NOTE: A UAC (administrator) prompt may appear — approve it to continue.\n")
+    install_log.append(f"Installing NVIDIA CUDA Toolkit {version or '(latest)'}...\n\n")
+    try:
+        process = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, encoding="utf-8", errors="replace"
+        )
+        for line in process.stdout:
+            install_log.append(line)
+        process.wait()
+        if process.returncode == 0:
+            install_log.append(f"\n--- CUDA Toolkit installed successfully! ---\n")
+            install_log.append("A system restart may be required for changes to take effect.\n")
+        else:
+            install_log.append(f"\n--- Installation failed (exit code {process.returncode}) ---\n")
+            install_log.append("Try running the command from an elevated (admin) command prompt.\n")
+            install_log.append("To list available versions: winget search Nvidia.CUDA\n")
+    except FileNotFoundError:
+        install_log.append("\n--- Error: 'winget' not found ---\n")
+        install_log.append("winget ships with Windows 10 1709+ / Windows 11.\n")
+        install_log.append("Download CUDA Toolkit manually: https://developer.nvidia.com/cuda-downloads\n")
     except Exception as e:
         install_log.append(f"\n--- Error: {e} ---\n")
     finally:
@@ -454,6 +527,26 @@ h1 {
         <div id="cuda-summary" style="margin-top:12px"></div>
     </div>
 
+    <!-- CUDA Toolkit -->
+    <div class="card">
+        <h2><span class="icon">&#9889;</span> NVIDIA CUDA Toolkit</h2>
+        <div id="cuda-toolkit-info"><span class="loading">Loading...</span></div>
+        <div class="sep"></div>
+        <div class="form-section">
+            <label>Install / Upgrade Toolkit Version</label>
+            <div class="radio-group" id="toolkit-version-group"><span class="loading">Loading...</span></div>
+        </div>
+        <p style="font-size:0.8rem;color:var(--warning);margin-bottom:14px">
+            &#9888;&nbsp; Requires administrator rights &mdash; a UAC prompt will appear.<br>
+            Close SwarmUI before installing. Use <code style="font-family:monospace">winget search Nvidia.CUDA</code> to verify exact version strings.
+        </p>
+        <div class="btn-row">
+            <button class="btn btn-primary" id="toolkit-install-btn" onclick="startToolkitInstall()">Install Selected Toolkit</button>
+            <button class="btn btn-secondary btn-sm" onclick="checkToolkitVersions()">List Available Versions</button>
+            <span id="toolkit-status"></span>
+        </div>
+    </div>
+
     <!-- Install / Upgrade -->
     <div class="card">
         <h2><span class="icon">&#11015;</span> Install / Upgrade / Switch</h2>
@@ -540,6 +633,7 @@ let installing = false;
 let logPollInterval = null;
 let lastLogIndex = 0;
 let packageData = []; // filled from /api/packages
+let currentOperation = null; // 'pip' | 'toolkit' | 'toolkit-check'
 
 // --- Helpers ---
 function getSelected(name) {
@@ -709,6 +803,121 @@ async function fetchAll() {
     } catch (e) {
         document.getElementById('env-grid').innerHTML = '<span class="loading">Failed to load</span>';
     }
+    fetchCudaToolkit();
+}
+
+// --- CUDA Toolkit ---
+async function fetchCudaToolkit() {
+    try {
+        const res = await fetch('/api/cuda-toolkit');
+        renderCudaToolkit(await res.json());
+    } catch (e) {
+        document.getElementById('cuda-toolkit-info').innerHTML =
+            '<span style="color:var(--text-dim)">Failed to load toolkit info.</span>';
+    }
+}
+
+function renderCudaToolkit(data) {
+    const info = document.getElementById('cuda-toolkit-info');
+    if (data.installed) {
+        const pathRow = data.cuda_path
+            ? `<span class="env-label">Install Path</span><span class="env-value">${data.cuda_path}</span>`
+            : '';
+        const nvccRow = data.nvcc_path
+            ? `<span class="env-label">nvcc</span><span class="env-value">${data.nvcc_path}</span>`
+            : '';
+        info.innerHTML = `<div class="env-grid">
+            <span class="env-label">Toolkit Version</span>
+            <span class="env-value" style="color:var(--success);font-weight:600">${data.version} &nbsp;<span class="badge badge-installed">Detected</span></span>
+            ${pathRow}${nvccRow}
+        </div>`;
+    } else {
+        info.innerHTML = '<span style="color:var(--warning)">&#9888; CUDA Toolkit not detected &mdash; nvcc not found in PATH or CUDA_PATH</span>';
+    }
+
+    const group = document.getElementById('toolkit-version-group');
+    group.innerHTML = data.versions.map((v, i) =>
+        `<label class="radio-btn">
+            <input type="radio" name="toolkit-version" value="${v.version ?? ''}" ${i === 0 ? 'checked' : ''}>
+            <span>${v.label}</span>
+        </label>`
+    ).join('');
+}
+
+async function startToolkitInstall() {
+    if (installing) { alert('Another operation is already running.'); return; }
+    const el = document.querySelector('input[name="toolkit-version"]:checked');
+    if (!el) { alert('Select a version.'); return; }
+    const version = el.value || null;
+    const label = el.closest('label').querySelector('span').textContent;
+    if (!confirm(`Install ${label}?\n\nA UAC (administrator) prompt will appear.\nMake sure SwarmUI is closed first.`)) return;
+
+    installing = true;
+    currentOperation = 'toolkit';
+    lastLogIndex = 0;
+    setButtonsDisabled(true);
+    document.getElementById('toolkit-status').innerHTML =
+        '<span class="spinner"></span> <span class="status-badge status-running">Installing Toolkit...</span>';
+    document.getElementById('log-area').textContent = '';
+
+    try {
+        const res = await fetch('/api/cuda-toolkit/install', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ version }),
+        });
+        const data = await res.json();
+        if (data.error) {
+            document.getElementById('log-area').textContent = 'Error: ' + data.error;
+            finishToolkitInstall(false);
+            return;
+        }
+        startLogPolling();
+    } catch (e) {
+        document.getElementById('log-area').textContent = 'Error: ' + e.message;
+        finishToolkitInstall(false);
+    }
+}
+
+async function checkToolkitVersions() {
+    if (installing) { alert('Another operation is already running.'); return; }
+    installing = true;
+    currentOperation = 'toolkit-check';
+    lastLogIndex = 0;
+    setButtonsDisabled(true);
+    document.getElementById('log-area').textContent = '';
+    try {
+        const res = await fetch('/api/cuda-toolkit/install', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'search' }),
+        });
+        const data = await res.json();
+        if (data.error) {
+            document.getElementById('log-area').textContent = 'Error: ' + data.error;
+            finishToolkitInstall(false);
+            return;
+        }
+        startLogPolling();
+    } catch (e) {
+        document.getElementById('log-area').textContent = 'Error: ' + e.message;
+        finishToolkitInstall(false);
+    }
+}
+
+function finishToolkitInstall(success) {
+    installing = false;
+    setButtonsDisabled(false);
+    const s = document.getElementById('toolkit-status');
+    if (currentOperation === 'toolkit') {
+        s.innerHTML = success
+            ? '<span class="status-badge status-done">Done! Restart may be required.</span>'
+            : '<span class="status-badge status-error">Failed &mdash; see log</span>';
+        if (success) fetchCudaToolkit();
+    } else {
+        s.innerHTML = '';
+    }
+    setTimeout(() => { s.innerHTML = ''; }, 12000);
 }
 
 async function refreshStatus() {
@@ -729,6 +938,7 @@ async function startInstall() {
     if (!packages.length) { alert('Select at least one package.'); return; }
 
     installing = true;
+    currentOperation = 'pip';
     lastLogIndex = 0;
     setButtonsDisabled(true);
     document.getElementById('install-status').innerHTML = '<span class="spinner"></span> <span class="status-badge status-running">Installing...</span>';
@@ -766,6 +976,7 @@ async function startUninstall() {
     if (!confirm(`Uninstall: ${packages.join(', ')}?`)) return;
 
     installing = true;
+    currentOperation = 'pip';
     lastLogIndex = 0;
     setButtonsDisabled(true);
     document.getElementById('install-status').innerHTML = '<span class="spinner"></span> <span class="status-badge status-running">Uninstalling...</span>';
@@ -793,6 +1004,8 @@ async function startUninstall() {
 function setButtonsDisabled(v) {
     document.getElementById('install-btn').disabled = v;
     document.getElementById('uninstall-btn').disabled = v;
+    const tb = document.getElementById('toolkit-install-btn');
+    if (tb) tb.disabled = v;
 }
 
 function startLogPolling() {
@@ -815,8 +1028,12 @@ async function pollLog() {
             logPollInterval = null;
             const allText = document.getElementById('log-area').textContent;
             const success = allText.includes('successfully');
-            finishInstall(success);
-            if (success) refreshStatus();
+            if (currentOperation === 'toolkit' || currentOperation === 'toolkit-check') {
+                finishToolkitInstall(success);
+            } else {
+                finishInstall(success);
+                if (success) refreshStatus();
+            }
         }
     } catch (e) {}
 }
@@ -887,6 +1104,8 @@ class PyTorchManagerHandler(http.server.BaseHTTPRequestHandler):
             self.send_json(get_gpu_info())
         elif path == "/api/packages":
             self.send_json(get_package_status())
+        elif path == "/api/cuda-toolkit":
+            self.send_json({**get_cuda_toolkit_info(), "versions": CUDA_TOOLKIT_VERSIONS})
         elif path == "/api/install/log":
             from_index = int(params.get("from", [0])[0])
             lines = list(install_log)
@@ -956,6 +1175,38 @@ class PyTorchManagerHandler(http.server.BaseHTTPRequestHandler):
                 )
             thread.start()
             self.send_json({"status": "started"})
+        elif parsed.path == "/api/cuda-toolkit/install":
+            global install_running
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length).decode("utf-8")
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                self.send_json({"error": "Invalid JSON"}, 400)
+                return
+
+            action = data.get("action", "install")
+
+            if not install_lock.acquire(blocking=False):
+                self.send_json({"error": "An operation is already running"}, 409)
+                return
+            install_running = True
+
+            if action == "search":
+                thread = threading.Thread(target=self._do_toolkit_search, daemon=True)
+            else:
+                version = data.get("version") or None
+                allowed = {v["version"] for v in CUDA_TOOLKIT_VERSIONS}
+                if version is not None and version not in allowed:
+                    install_running = False
+                    install_lock.release()
+                    self.send_json({"error": f"Unknown version: {version}"}, 400)
+                    return
+                thread = threading.Thread(
+                    target=self._do_toolkit_install, args=(version,), daemon=True
+                )
+            thread.start()
+            self.send_json({"status": "started"})
         else:
             self.send_response(404)
             self.end_headers()
@@ -972,6 +1223,36 @@ class PyTorchManagerHandler(http.server.BaseHTTPRequestHandler):
         try:
             run_uninstall(packages)
         finally:
+            install_lock.release()
+
+    @staticmethod
+    def _do_toolkit_install(version):
+        try:
+            run_cuda_toolkit_install(version)
+        finally:
+            install_lock.release()
+
+    @staticmethod
+    def _do_toolkit_search():
+        global install_running
+        install_log.clear()
+        install_done.clear()
+        install_log.append("$ winget search Nvidia.CUDA\n\n")
+        try:
+            result = subprocess.run(
+                ["winget", "search", "Nvidia.CUDA"],
+                capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace"
+            )
+            for line in (result.stdout or result.stderr or "No output.").splitlines(keepends=True):
+                install_log.append(line)
+            install_log.append("\n--- Done ---\n")
+        except FileNotFoundError:
+            install_log.append("Error: winget not found.\n")
+        except Exception as e:
+            install_log.append(f"Error: {e}\n")
+        finally:
+            install_running = False
+            install_done.set()
             install_lock.release()
 
 
