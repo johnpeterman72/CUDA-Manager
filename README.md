@@ -6,6 +6,10 @@ A web-based PyTorch and CUDA version manager for SwarmUI's embedded ComfyUI Pyth
 
 Provides a local web UI (http://localhost:9090) to install, upgrade, switch, or uninstall PyTorch and CUDA packages inside SwarmUI's bundled Python (`dlbackend/comfy/python_embeded/`). No command-line knowledge required.
 
+![](./res/001.png)
+
+![](./res/002.png)
+
 **Managed packages:**
 - PyTorch
 - TorchVision
