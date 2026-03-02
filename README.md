@@ -32,16 +32,17 @@ Have you ever run a ComfyUI update and it broke your install because it resets y
 
 ## Installation
 
-1. Copy `manage-pytorch.bat`  into your SwarmUI root directory (same folder as `launch-windows.bat`). and copy and `pytorch_manager.py` into the python_embeded directory.
+1. Copy `manage-pytorch.bat` and `pytorch_manager.py`  into your SwarmUI root directory (same folder as `launch-windows.bat`).
 
 ```
 SwarmUI/
 ├── manage-pytorch.bat      ← add this
+├── pytorch_manager.py      ← add this
 ├── launch-windows.bat
 └── dlbackend/
     └── comfy/
         └── python_embeded/
-            └── pytorch_manager.py      ← add this
+
 ```
 
 2. Double-click `manage-pytorch.bat` to launch.
