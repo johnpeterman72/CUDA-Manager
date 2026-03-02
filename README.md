@@ -32,7 +32,7 @@ Provides a local web UI (http://localhost:9090) to install, upgrade, switch, or 
 
 ## Installation
 
-1. Copy `manage-pytorch.bat` and `pytorch_manager.py` into your SwarmUI root directory (same folder as `launch-windows.bat`).
+1. Copy `manage-pytorch.bat`  into your SwarmUI root directory (same folder as `launch-windows.bat`). and copy and `pytorch_manager.py` into the python_embeded directory.
 
 ```
 SwarmUI/
