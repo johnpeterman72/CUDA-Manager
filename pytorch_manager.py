@@ -1176,7 +1176,6 @@ class PyTorchManagerHandler(http.server.BaseHTTPRequestHandler):
             thread.start()
             self.send_json({"status": "started"})
         elif parsed.path == "/api/cuda-toolkit/install":
-            global install_running
             content_length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(content_length).decode("utf-8")
             try:
